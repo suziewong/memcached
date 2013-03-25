@@ -90,6 +90,7 @@ static size_t item_make_header(const uint8_t nkey, const int flags, const int nb
     return sizeof(item) + nkey + *nsuffix + nbytes;
 }
 
+
 /*@null@*/
 item *do_item_alloc(char *key, const size_t nkey, const int flags, const rel_time_t exptime, const int nbytes) {
     uint8_t nsuffix;
@@ -126,6 +127,7 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags, const rel_tim
         }
     }
 
+        // 当申请内存失败后，开始淘汰数据了。
     if (it == NULL && (it = slabs_alloc(ntotal, id)) == NULL) {
         /*
         ** Could not find an expired item at the tail, and memory allocation
@@ -149,12 +151,23 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags, const rel_tim
          * tries
          */
 
+        /* 
+         *  当Memcached使用内存数大于设置的最大内存使用数时，为了腾出内存空间来存放新的数据项
+         *  Memcached会启动LRU算法淘汰旧的数据项
+         *
+         * */
         if (tails[id] == 0) {
             itemstats[id].outofmemory++;
             return NULL;
         }
+        /*
+         *  从item list的尾部开始遍历，因为Memcached会把刚刚访问过的item放到item列表头部
+         *  尾部都是没有访问过得（或者很少访问的），LRU
+         *
+         * */
 
         for (search = tails[id]; tries > 0 && search != NULL; tries--, search=search->prev) {
+            //查找一个引用计数器为0的item
             if (search->refcount == 0) {
                 if (search->exptime == 0 || search->exptime > current_time) {
                     itemstats[id].evicted++;
@@ -167,9 +180,11 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags, const rel_tim
                 break;
             }
         }
+        //再次申请，如果没有找计数器为0的item 到的话
         it = slabs_alloc(ntotal, id);
         if (it == 0) {
             itemstats[id].outofmemory++;
+            //这段比较汗！
             /* Last ditch effort. There is a very rare bug which causes
              * refcount leaks. We've fixed most of them, but it still happens,
              * and it may happen in the future.
@@ -177,8 +192,15 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags, const rel_tim
              * three hours, so if we find one in the tail which is that old,
              * free it anyway.
              */
+            /*
+             *  从item list的尾部开始遍历，因为Memcached会把刚刚访问过的item放到item列表头部
+             *  尾部都是没有访问过得（或者很少访问的），LRU
+             *
+             * */
             tries = 50;
             for (search = tails[id]; tries > 0 && search != NULL; tries--, search=search->prev) {
+                
+                //查找一个3小时没有被访问的item
                 if (search->refcount != 0 && search->time + TAIL_REPAIR_TIME < current_time) {
                     itemstats[id].tailrepairs++;
                     search->refcount = 0;
@@ -186,6 +208,9 @@ item *do_item_alloc(char *key, const size_t nkey, const int flags, const rel_tim
                     break;
                 }
             }
+            /*
+             *  再次申请，如果还是找不到的话，就返回NULL（申请失败）
+             * */
             it = slabs_alloc(ntotal, id);
             if (it == 0) {
                 return NULL;
@@ -457,6 +482,11 @@ void do_item_stats_sizes(ADD_STAT add_stats, void *c) {
 }
 
 /** wrapper around assoc_find which does the lazy expiration logic */
+/* 
+ *  延迟删除过期item到查找时进行，可以提高Memcached效率。这样不必每时每刻检查过期item，从而提高CPU
+ *  效率
+ *
+ * */
 item *do_item_get(const char *key, const size_t nkey) {
     item *it = assoc_find(key, nkey);
     int was_found = 0;
@@ -480,7 +510,11 @@ item *do_item_get(const char *key, const size_t nkey) {
         fprintf(stderr, " -nuked by flush");
         was_found--;
     }
-
+    
+    /* 
+     *  删除过期 item ,当item过期时间早于当前时间时，便会删除此item
+     *
+     * */
     if (it != NULL && it->exptime != 0 && it->exptime <= current_time) {
         do_item_unlink(it);           /* MTSAFE - cache_lock held */
         it = NULL;

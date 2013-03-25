@@ -2463,7 +2463,11 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     assert(c != NULL);
 
     set_noreply_maybe(c, tokens, ntokens);
-
+    /* 
+     *  KEY_MAX_LENGTH 被定义为250字节
+     *  key的最大长度为250
+     *  为了节约内存和带宽，我们尽量使用较短的key
+     * */
     if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {
         out_string(c, "CLIENT_ERROR bad command line format");
         return;
@@ -3179,6 +3183,10 @@ static void drive_machine(conn *c) {
     while (!stop) {
 
         switch(c->state) {
+        /* 
+         *  当客户端连接到Memcached时，主线程会调用accept函数接收客户端连接，然后调用dispatch_conn_new函数把连接交给工作线程处理
+         *
+         * */
         case conn_listening:
             addrlen = sizeof(addr);
             if ((sfd = accept(c->sfd, (struct sockaddr *)&addr, &addrlen)) == -1) {
@@ -3202,7 +3210,10 @@ static void drive_machine(conn *c) {
                 close(sfd);
                 break;
             }
-
+            /*
+             *  dispatch_conn_new() 的主要工作是选择一个工作线程，把客户端连接push到此工作线程的CQ队列中
+             *  接着发送一个信号通知有新的客户端连接需要处理
+             * */
             dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,
                                      DATA_BUFFER_SIZE, tcp_transport);
             stop = true;

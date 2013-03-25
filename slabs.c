@@ -24,19 +24,19 @@
 /* powers-of-N allocation structures */
 
 typedef struct {
-    unsigned int size;      /* sizes of items */
-    unsigned int perslab;   /* how many items per slab */
+    unsigned int size;      /* 一个chunk块的大小 */
+    unsigned int perslab;   /* 一个slab页有多少个chunk */
 
-    void **slots;           /* list of item ptrs */
-    unsigned int sl_total;  /* size of previous array */
-    unsigned int sl_curr;   /* first free slot */
+    void **slots;           /* 保存被回收的chunk块列表 */
+    unsigned int sl_total;  /* 保存slots列表中chunk块的个数 */
+    unsigned int sl_curr;   /* 记录slots列表中下一个可以使用的chunk块 */
 
-    void *end_page_ptr;         /* pointer to next free item at end of page, or 0 */
+    void *end_page_ptr;         /* 保存下一个可以使用的空闲chunk块 */
     unsigned int end_page_free; /* number of items remaining at end of last alloced page */
 
     unsigned int slabs;     /* how many slabs were allocated for this class */
 
-    void **slab_list;       /* array of slab pointers */
+    void **slab_list;       /* 保存所有从操作系统申请的slab列表 */
     unsigned int list_size; /* size of prev array */
 
     unsigned int killing;  /* index+1 of dying slab, or zero if none */
@@ -80,6 +80,12 @@ static void slabs_preallocate (const unsigned int maxslabs);
  * 0 means error: can't store such a large object
  */
 
+/* 
+ *  memcached向Slab层申请内存数据时，slab层从slabclass中找到一个合适的slab页,然后分配一个空闲的chunk块给memcached使用，此过程通过slabs_clsid()和do_slabs_alloc()函数完成
+ *
+ * 作用：根据参数size找到一个chunk块大小刚好合适的slabclass。找到合适的slabclass后，便会把其中一个可用的chunk分配给Memcached使用，分配工作由do_slabs_alloc()函数。
+ *
+ * */
 unsigned int slabs_clsid(const size_t size) {
     int res = POWER_SMALLEST;
 
@@ -121,12 +127,17 @@ void slabs_init(const size_t limit, const double factor, const bool prealloc) {
 
     while (++i < POWER_LARGEST && size <= POWER_BLOCK / 2) {
         /* Make sure items are always n-byte aligned */
+        /* 
+         *  使用memcached -vv查看内存使用情况
+         *  80 * 1.25 = 100  而memcached规定8字节对齐
+         *  size += 8 -(size %8)
+         * */
         if (size % CHUNK_ALIGN_BYTES)
             size += CHUNK_ALIGN_BYTES - (size % CHUNK_ALIGN_BYTES);
 
         slabclass[i].size = size;
-        slabclass[i].perslab = POWER_BLOCK / slabclass[i].size;
-        size *= factor;
+        slabclass[i].perslab = POWER_BLOCK / slabclass[i].size;  // 1MB/chunk的大小
+        size *= factor; //默认以1.25倍的大小增大
         if (settings.verbose > 1) {
             fprintf(stderr, "slab class %3d: chunk size %6u perslab %5u\n",
                     i, slabclass[i].size, slabclass[i].perslab);
@@ -216,7 +227,10 @@ static int do_slabs_newslab(const unsigned int id) {
 
     return 1;
 }
-
+/* 
+ *  do_slabs_alloc()函数首先尝试从slots列表（被回收的chunk列表）中获得可用的chunk块，如果有可用的chunk块便返回，否则就从空闲的chunk列表获取可用的chunk块并返回
+ *
+ * */
 /*@null@*/
 static void *do_slabs_alloc(const size_t size, unsigned int id) {
     slabclass_t *p;
@@ -227,12 +241,12 @@ static void *do_slabs_alloc(const size_t size, unsigned int id) {
         return NULL;
     }
 
-    p = &slabclass[id];
+    p = &slabclass[id]; /*  大小合适的slabclass */
     assert(p->sl_curr == 0 || ((item *)p->slots[p->sl_curr - 1])->slabs_clsid == 0);
 
 #ifdef USE_SYSTEM_MALLOC
     if (mem_limit && mem_malloced + size > mem_limit) {
-        MEMCACHED_SLABS_ALLOCATE_FAILED(size, id);
+        MEMCACHED_SLABS_ALLOCATE_FAILED(size, id); 
         return 0;
     }
     mem_malloced += size;
@@ -244,16 +258,16 @@ static void *do_slabs_alloc(const size_t size, unsigned int id) {
     /* fail unless we have space at the end of a recently allocated page,
        we have something on our freelist, or we could allocate a new page */
     if (! (p->end_page_ptr != 0 || p->sl_curr != 0 ||
-           do_slabs_newslab(id) != 0)) {
+           do_slabs_newslab(id) != 0)) {    // 向操作系统申请新的slab页
         /* We don't have more memory available */
         ret = NULL;
     } else if (p->sl_curr != 0) {
         /* return off our freelist */
-        ret = p->slots[--p->sl_curr];
+        ret = p->slots[--p->sl_curr];       //  被回收的chunk块
     } else {
         /* if we recently allocated a whole page, return from that */
         assert(p->end_page_ptr != NULL);
-        ret = p->end_page_ptr;
+        ret = p->end_page_ptr;              //  空闲的chunk块
         if (--p->end_page_free != 0) {
             p->end_page_ptr = ((caddr_t)p->end_page_ptr) + p->size;
         } else {

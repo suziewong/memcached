@@ -17,7 +17,7 @@
 #include "protocol_binary.h"
 
 /* Maximum length of a key. */
-#define KEY_MAX_LENGTH 250
+#define KEY_MAX_LENGTH 250  //key的最大长度
 
 #define DATA_BUFFER_SIZE 2048
 #define UDP_READ_BUFFER_SIZE 65536
@@ -58,7 +58,7 @@
 /* Slab sizing definitions. */
 #define POWER_SMALLEST 1
 #define POWER_LARGEST  200
-#define POWER_BLOCK 1048576
+#define POWER_BLOCK 1048576 /* slab页的大小 */
 #define CHUNK_ALIGN_BYTES 8
 #define DONT_PREALLOC_SLABS
 #define MAX_NUMBER_OF_SLAB_CLASSES (POWER_LARGEST + 1)

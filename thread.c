@@ -233,6 +233,10 @@ static void *worker_libevent(void *arg) {
  * Processes an incoming "handle a new connection" item. This is called when
  * input arrives on the libevent wakeup pipe.
  */
+/* 
+ *  thread_libevent_process()函数的主要工作是从管道读取一个字节的数据，然后从CQ队列中读取得到一个连接，并调用conn_new()函数把此连接注册到libevent中进行侦听。当客户端连接可读或者可写时，Memcached便会调用drive_machine()函数处理
+ *
+ * */
 static void thread_libevent_process(int fd, short which, void *arg) {
     LIBEVENT_THREAD *me = arg;
     CQ_ITEM *item;
@@ -245,6 +249,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
     item = cq_pop(me->new_conn_queue);
 
     if (NULL != item) {
+ //conn_new()函数把此连接注册到libevent中进行侦听。当客户端连接可读或者可写时，Memcached便会调用drive_machine()函数处理
         conn *c = conn_new(item->sfd, item->init_state, item->event_flags,
                            item->read_buffer_size, item->transport, me->base);
         if (c == NULL) {
@@ -273,6 +278,12 @@ static int last_thread = 0;
  * from the main thread, either during initialization (for UDP) or because
  * of an incoming connection.
  */
+
+             /*
+             *  dispatch_conn_new() 的主要工作是选择一个工作线程，把客户端连接push到此工作线程的CQ队列中
+             *  接着发送一个信号通知有新的客户端连接需要处理
+             * */
+
 void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
                        int read_buffer_size, enum network_transport transport) {
     CQ_ITEM *item = cqi_new();
@@ -289,7 +300,7 @@ void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags,
     item->event_flags = event_flags;
     item->read_buffer_size = read_buffer_size;
     item->transport = transport;
-
+    //cq队列
     cq_push(thread->new_conn_queue, item);
 
     MEMCACHED_CONN_DISPATCH(sfd, thread->thread_id);
